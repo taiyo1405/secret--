@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <title>Si cờ rẹt</title>
+  <style>
+    :root{
+      --bg: #F5F5DC;
+      --btn: #D2A491;
+      --btn-hover:#C19382;
+      --text:#4A4A4A;
+      --card:#ffffffd9; /* 85% */
+      --glow-size: 240px; /* sẽ được cập nhật theo JS */
+      --safe-bot: env(safe-area-inset-bottom, 0px);
+      --safe-top: env(safe-area-inset-top, 0px);
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0; padding:0; overflow:hidden;
+      font-family: Verdana, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Apple Color Emoji","Segoe UI Emoji","Segoe UI Symbol", sans-serif;
+      display:flex; justify-content:center; align-items:center;
+      background: var(--bg);
+    }
+    canvas{display:block; position:absolute; inset:0; z-index:-1}
+
+    /* Intro button (responsive) */
+    #intro-container{
+      position:absolute; top:50%; left:50%; transform:translate(-50%, -50%);
+      z-index:10; transition: opacity .5s ease;
+      padding-top: var(--safe-top);
+    }
+    #intro-container.fade-out{ opacity:0; visibility:hidden }
+    #startButton{
+      background: var(--btn); color:#FFF5E1; border:none;
+      padding: clamp(14px, 2.8vh, 20px) clamp(22px, 6vw, 40px);
+      font-size: clamp(1rem, 2.8vw, 1.5rem); font-weight:bold;
+      border-radius:50px; cursor:pointer;
+      box-shadow:0 5px 15px rgba(0,0,0,.15); transition:all .3s ease;
+    }
+    #startButton:hover{
+      background: var(--btn-hover);
+      box-shadow:0 8px 20px rgba(0,0,0,.20);
+      transform: translateY(-3px);
+    }
+
+    /* Lời chúc: luôn nằm DƯỚI chậu; JS set top theo layout */
+    #greeting{
+      position:absolute; left:50%; transform:translateX(-50%);
+      width:min(86%, 560px); color:var(--text); background: var(--card);
+      padding: clamp(12px, 1.8vh, 18px) clamp(12px, 4vw, 20px);
+      border-radius:16px; text-align:center;
+      font-size: clamp(0.95rem, 2.8vw, 1.4rem); font-weight:bold;
+      box-shadow:0 4px 15px rgba(0,0,0,.10);
+      transition: opacity 1s ease, transform 1s ease, visibility 1s ease, top .2s ease;
+      z-index:5; margin-bottom: calc(var(--safe-bot) + 4px);
+    }
+    .hidden{ opacity:0; visibility:hidden; transform: translate(-50%, 10px); }
+    .visible{ opacity:1; visibility:visible; transform: translate(-50%, 0); }
+
+    /* Glow nhẹ quanh bó hoa (responsive size qua --glow-size) */
+    .bouquet-glow{
+      position:absolute; left:50%; transform: translateX(-50%);
+      width: var(--glow-size); height: var(--glow-size); border-radius:50%;
+      filter: blur(28px); pointer-events:none; z-index:2;
+      opacity:0; transition: opacity 1s ease;
+      background: radial-gradient(closest-side, rgba(255,255,255,.55), rgba(255,255,255,0));
+      animation: glow 3.2s ease-in-out infinite;
+    }
+    .bouquet-glow.show{ opacity:1; }
+    @keyframes glow{
+      0%,100%{ transform: translateX(-50%) scale(1); }
+      50%{ transform: translateX(-50%) scale(1.06); }
+    }
+
+    /* Lớp phủ fade-out pháo hoa */
+    .fw-fader{
+      position:absolute; inset:0; background: var(--bg);
+      opacity:0; pointer-events:none; z-index:1; /* trên canvas, dưới UI */
+      transition: opacity 1s ease;
+    }
+    .fw-fader.show{ opacity:1; }
+
+    /* Nhỏ hơn 420px: tăng kích thước chữ chúc 1 chút để dễ đọc */
+    @media (max-width: 420px){
+      #greeting{ font-size: clamp(1rem, 3.8vw, 1.25rem); }
+    }
+  </style>
+</head>
+<body>
+  <div id="intro-container">
+    <button id="startButton">Nếu cậu là con gái, hãy bấm vào đây!</button>
+  </div>
+
+  <!-- EDIT: lời chúc -->
+  <div id="greeting" class="hidden">
+    <p>Kính tặng gia đình Doraemon</p>
+    <p>Chúc các 💐 một ngày 20/10 thiệt là zui zẻ, mãi xinhh, có thật nhìu money hẹ hẹ</p>
+  </div>
+
+  <!-- glow quanh bó hoa -->
+  <div id="bouquetGlow" class="bouquet-glow"></div>
+
+  <!-- lớp phủ để fade-out pháo hoa -->
+  <div id="fwFader" class="fw-fader"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.0/p5.js"></script>
+  <script>
+    // ======= STATE & GLOBALS =======
+    // waiting -> fireworks -> fireworks_fade -> scene -> growth
+    let state = 'waiting';
+    let fireworks = [];
+    let flowerPot;
+    let bouquet;
+    let growingFlowers = [];
+
+    // Responsive sizes (được set trong computeLayout)
+    let POT_W = 160, POT_H = 120, POT_Y_OFFSET = 40;
+    let BOUQUET_OFFSET_Y = 20, GREETING_MARGIN = 18;
+
+    // Số hoa random sẽ scale theo màn hình
+    let MAX_FLOWERS = 100;
+
+    // Vùng chậu để tránh hoa random đè lên
+    let potArea;
+
+    // Cánh hoa bay nhẹ
+    let petals = [];
+
+    // Fireworks timing
+    const FIREWORKS_DURATION = 2800;
+    let fwTimer;
+
+    // Spawner cho hoa random tuần tự
+    let growthInterval = null;
+    let SPAWN_EVERY_MS = 130;
+
+    // ======= LAYOUT / RESPONSIVE =======
+    function computeLayout(){
+      const w = windowWidth;
+      const h = windowHeight;
+      const S = Math.min(w, h);          // scale cơ sở theo cạnh nhỏ
+
+      // Kích thước chậu theo S
+      POT_W = Math.round( clamp(S * 0.36, 120, 220) );
+      POT_H = Math.round( clamp(S * 0.27, 90, 170) );
+
+      // Khoảng cách
+      POT_Y_OFFSET     = clamp(S * 0.04, 24, 56);
+      BOUQUET_OFFSET_Y = clamp(S * 0.02, 14, 32);
+      GREETING_MARGIN  = clamp(S * 0.02, 12, 28);
+
+      // Glow size cho mobile/desktop
+      const glowSize = Math.round( clamp(S * 0.32, 160, 320) );
+      document.documentElement.style.setProperty('--glow-size', glowSize + 'px');
+
+      // Số hoa random dựa trên diện tích hiển thị (giữ trong khoảng 70–140)
+      const areaK = (w*h) / (375*667); // chuẩn theo iPhone 8
+      MAX_FLOWERS = Math.round( clamp(80 * areaK, 70, 140) );
+
+      // Tốc độ nở điều chỉnh theo màn hình: màn hình nhỏ nở chậm hơn chút để nhìn rõ
+      SPAWN_EVERY_MS = Math.round( clamp(130 / Math.sqrt(areaK), 110, 160) );
+    }
+
+    function centerPositions(){
+      const centerX = windowWidth / 2;
+      const centerY = windowHeight / 2;
+
+      potArea = {
+        x: centerX - POT_W/2,
+        y: centerY - POT_H/2,
+        w: POT_W,
+        h: POT_H + POT_Y_OFFSET
+      };
+
+      // Đặt glow theo trung tâm (dùng bottom để khỏi ảnh hưởng safe-area-top)
+      const glow = document.getElementById('bouquetGlow');
+      glow.style.bottom = `${windowHeight - (centerY + 10)}px`;
+
+      // Lời chúc nằm dưới chậu, có tính safe-area bottom
+      const greeting = document.getElementById('greeting');
+      greeting.style.top = `${centerY + POT_H/2 + GREETING_MARGIN}px`;
+    }
+
+    function clamp(v, lo, hi){ return Math.max(lo, Math.min(hi, v)); }
+
+    // ======= P5 SETUP / DRAW =======
+    function setup(){
+      createCanvas(windowWidth, windowHeight);
+      computeLayout();
+      background(getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || '#F5F5DC');
+      centerPositions();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      const startButton = document.getElementById('startButton');
+      startButton?.addEventListener('click', () => {
+        document.getElementById('intro-container').classList.add('fade-out');
+        startTheShow();
+      });
+    });
+
+    function draw(){
+      background('#F5F5DC');
+
+      if (state === 'fireworks' || state === 'fireworks_fade'){
+        for (let i = fireworks.length - 1; i >= 0; i--){
+          fireworks[i].update();
+          fireworks[i].show();
+          if (fireworks[i].isDone()) fireworks.splice(i, 1);
+        }
+      }
+
+      if (state === 'scene' || state === 'growth'){
+        if (flowerPot) flowerPot.show();
+        if (bouquet){ bouquet.update(); bouquet.show(); }
+
+        for (let i = petals.length - 1; i >= 0; i--){
+          petals[i].update(); petals[i].show();
+          if (petals[i].offscreen()) petals.splice(i,1);
+        }
+        maybeSpawnPetal();
+
+        // Hoa random (không thân) — vẽ tuần tự bằng spawner
+        for (let flower of growingFlowers){
+          flower.update();
+          flower.show();
+        }
+      }
+    }
+
+    // ======= FLOW =======
+    function startTheShow(){
+      if (state !== 'waiting') return;
+
+      // FIREWORKS
+      state = 'fireworks';
+      const interval = setInterval(() => {
+        fireworks.push(new Firework(random(width*0.15, width*0.85), random(height*0.55, height*0.75)));
+      }, 110);
+
+      fwTimer = setTimeout(() => {
+        clearInterval(interval);
+        state = 'fireworks_fade';
+        document.getElementById('fwFader').classList.add('show');
+
+        setTimeout(() => {
+          document.getElementById('fwFader').classList.remove('show');
+          showMainScene();
+        }, 1000);
+      }, FIREWORKS_DURATION);
+    }
+
+    function showMainScene(){
+      state = 'scene';
+      flowerPot = new FlowerPotNoStems(); // chậu đầy bông, KHÔNG thân
+      bouquet   = new BouquetNoStems(width/2, height/2 - POT_H/2 - BOUQUET_OFFSET_Y);
+
+      document.getElementById('greeting').classList.replace('hidden','visible');
+      document.getElementById('bouquetGlow').classList.add('show');
+
+      // Sau 1s -> bắt đầu mọc tuần tự từng bông
+      setTimeout(() => {
+        state = 'growth';
+        if (growthInterval) clearInterval(growthInterval);
+        growthInterval = setInterval(() => {
+          if (growingFlowers.length >= MAX_FLOWERS){
+            clearInterval(growthInterval);
+            return;
+          }
+          addNewFlowerSequential();
+        }, SPAWN_EVERY_MS);
+      }, 1000);
+    }
+
+    // ======= HOA RANDOM TUẦN TỰ (KHÔNG THÂN) =======
+    function addNewFlowerSequential(){
+      let valid = false, x, y, attempts = 0;
+      const minDist = clamp(Math.min(width, height) * 0.035, 34, 48); // giãn bông theo màn hình
+
+      while (!valid && attempts < 200){
+        x = random(16, width - 16);
+        y = random(16, height - 16);
+
+        // Tránh chậu
+        if (x > potArea.x && x < potArea.x + potArea.w && y > potArea.y - 40 && y < potArea.y + potArea.h){
+          attempts++; continue;
+        }
+        // Tránh greeting
+        const rect = document.getElementById('greeting').getBoundingClientRect();
+        if (x > rect.left && x < rect.right && y > rect.top && y < rect.bottom){
+          attempts++; continue;
+        }
+        // Tránh bó hoa giữa
+        const bx = width/2, by = height/2 - POT_H/2 - BOUQUET_OFFSET_Y;
+        const avoidR = clamp(Math.min(width, height) * 0.13, 90, 130);
+        if (dist(x,y,bx,by) < avoidR){ attempts++; continue; }
+
+        // Tránh đè bông khác
+        let overlap = false;
+        for (let other of growingFlowers){
+          if (dist(x, y, other.pos.x, other.pos.y) < minDist){
+            overlap = true; break;
+          }
+        }
+        valid = !overlap;
+        attempts++;
+      }
+
+      if (valid){
+        const f = new PetalFlower(
+          x, y,
+          true /*fadeIn*/,
+          random(0.08, 0.14) /*growSpeed*/
+        );
+        growingFlowers.push(f);
+      }
+    }
+
+    // ======= CLASSES =======
+
+    /* CHẬU Ở GIỮA — NHIỀU BÔNG HOA (KHÔNG THÂN), LẤP ĐẦY GỌN & RESPONSIVE */
+    class FlowerPotNoStems{
+      constructor(){
+        this.cx = width/2;
+        this.cy = height/2;
+        this.mouthY = this.cy - POT_H/2;
+        this.baseY  = this.cy + POT_H/2;
+
+        this.heads = [];
+        this.spawnHeads();
+      }
+
+      spawnHeads(){
+        // số bông trong chậu scale theo kích thước chậu/S
+        const S = Math.min(width, height);
+        const base = clamp(Math.round( (POT_W*POT_H) / 600 ), 22, 40); // 22–40 tùy kích thước
+        const N = base;
+        const minDist = clamp(S * 0.028, 20, 28);
+        const rangeX  = POT_W * 0.86;
+        const rangeTop= clamp(S * 0.18, 90, 150);
+
+        let tries = 0;
+        while (this.heads.length < N && tries < 1500){
+          const rx = random(-rangeX/2, rangeX/2);
+          const arch = map(abs(rx), 0, rangeX/2, rangeTop, rangeTop*0.35);
+          const ry = -random(arch*0.62, arch);
+
+          const rMin = clamp(S*0.02, 12, 18);
+          const rMax = clamp(S*0.032, 18, 26);
+
+          const candidate = {
+            x: this.cx + rx,
+            y: this.mouthY + 8 + ry,
+            r: random(rMin, rMax),  // kích thước bông theo S
+            alpha: 0,
+            scale: 0,
+            cPetal: color(random(190,255), random(140,220), random(190,255), 230),
+            cCore:  color(255, 255, random(70,160))
+          };
+
+          let ok = true;
+          for (const h of this.heads){
+            if (dist(candidate.x, candidate.y, h.x, h.y) < (minDist + (candidate.r+h.r)*0.12)){
+              ok = false; break;
+            }
+          }
+          if (ok) this.heads.push(candidate);
+          tries++;
+        }
+
+        this.heads = shuffle(this.heads);
+      }
+
+      show(){
+        // Vẽ hoa (không thân) trước
+        for (const h of this.heads){
+          h.scale = lerp(h.scale, 1, 0.12);
+          h.alpha = lerp(h.alpha, 255, 0.10);
+
+          push();
+          translate(h.x, h.y);
+          scale(h.scale);
+
+          noStroke();
+          fill(red(h.cPetal), green(h.cPetal), blue(h.cPetal), h.alpha);
+          for (let i=0;i<6;i++){
+            ellipse(0, h.r/2.5, h.r/3, h.r);
+            rotate(PI/3);
+          }
+          fill(red(h.cCore), green(h.cCore), blue(h.cCore), h.alpha);
+          ellipse(0,0, h.r/2);
+          pop();
+        }
+
+        // Thân chậu + viền miệng
+        noStroke();
+        fill(139,69,19);
+        beginShape();
+        vertex(this.cx - POT_W*0.44, this.mouthY + 20);
+        vertex(this.cx + POT_W*0.44, this.mouthY + 20);
+        vertex(this.cx + POT_W*0.31, this.baseY);
+        vertex(this.cx - POT_W*0.31, this.baseY);
+        endShape(CLOSE);
+
+        fill(160,82,45);
+        rect(this.cx - POT_W*0.47, this.mouthY, POT_W*0.94, 20, 6);
+      }
+    }
+
+    /* BÓ HOA GIỮA — KHÔNG THÂN, chỉ giấy gói + hoa lily */
+    class BouquetNoStems{
+      constructor(x, y){
+        this.x = x; this.y = y;
+        this.scale = 0;
+        this.lilies = [];
+        const colors = [
+          color(255,180,186), color(255,221,150), color(197,233,255),
+          color(210,255,210), color(255,204,255), color(255,245,170)
+        ];
+        const count = 18;
+        for (let i=0;i<count;i++){
+          this.lilies.push({
+            x: random(-POT_W*0.3, POT_W*0.3),
+            y: random(-clamp(POT_H*0.65, 60, 120), -6),
+            r: random(clamp(POT_W*0.06, 8, 12), clamp(POT_W*0.09, 12, 18)),
+            c: random(colors),
+            sway: random(TWO_PI)
+          });
+        }
+      }
+      update(){ this.scale = lerp(this.scale, 1, 0.08); }
+      show(){
+        push();
+        translate(this.x, this.y);
+        scale(this.scale);
+
+        // giấy gói (không thân)
+        noStroke();
+        fill(255,255,255, 238);
+        beginShape();
+        vertex(-POT_W*0.38,  8);
+        bezierVertex(-POT_W*0.46, -12, -POT_W*0.37, -POT_H*0.47, -POT_W*0.095, -POT_H*0.62);
+        vertex( POT_W*0.38,  8);
+        bezierVertex( POT_W*0.46, -12,  POT_W*0.31, -POT_H*0.50,  POT_W*0.05, -POT_H*0.64);
+        endShape(CLOSE);
+
+        // nơ
+        fill(255, 210, 120, 230);
+        ellipse(-8, 6, 18, 10);
+        ellipse( 10, 6, 18, 10);
+        rect(-4, 7, 12, 6, 3);
+
+        // hoa lily mini: lắc rất nhẹ
+        for (let L of this.lilies){
+          push();
+          const offset = sin(frameCount*0.015 + L.sway) * clamp(POT_W*0.006, 0.6, 1.6);
+          translate(L.x + offset, L.y);
+          noStroke(); fill(L.c);
+          for (let p=0;p<5;p++){ ellipse(0, L.r*0.45, L.r*0.38, L.r); rotate(TWO_PI/5); }
+          fill(255, 255, 180); ellipse(0,0, L.r*0.55);
+          pop();
+        }
+        pop();
+      }
+    }
+
+    /* HOA RANDOM NGOÀI CHẬU — KHÔNG THÂN, FADE-IN TỪ TỪ */
+    class PetalFlower{
+      constructor(x, y, fadeIn = true, growSpeed = 0.1){
+        this.pos = createVector(x, y);
+        const S = Math.min(width, height);
+        this.size = random(clamp(S*0.022, 14, 20), clamp(S*0.038, 20, 30));
+        this.scale = fadeIn ? 0 : 1;
+        this.alpha = fadeIn ? 0 : 255;
+        this.growSpeed = growSpeed;
+
+        // Nghiêng nhẹ, KHÔNG sway
+        this.angle = random(-0.12, 0.12);
+
+        this.petCol = color(random(180,255), random(120,220), random(180,255), 230);
+        this.coreCol = color(255, 255, random(50,150));
+      }
+      update(){
+        this.scale = lerp(this.scale, 1, this.growSpeed);
+        this.alpha = lerp(this.alpha, 255, this.growSpeed*0.9);
+      }
+      show(){
+        push();
+        translate(this.pos.x, this.pos.y);
+        scale(this.scale);
+        rotate(this.angle);
+
+        noStroke();
+        const c = color(red(this.petCol), green(this.petCol), blue(this.petCol), this.alpha);
+        fill(c);
+        for (let i=0;i<6;i++){
+          ellipse(0, this.size/2.5, this.size/3, this.size);
+          rotate(PI/3);
+        }
+
+        fill(red(this.coreCol), green(this.coreCol), blue(this.coreCol), this.alpha);
+        ellipse(0,0, this.size/2);
+        pop();
+      }
+    }
+
+    // ===== Fireworks (y như cũ) =====
+    class Firework{
+      constructor(x, y){
+        this.firework = new Particle(x, y, true);
+        this.particles = [];
+        this.exploded = false;
+      }
+      update(){
+        this.firework.update();
+        if (!this.exploded && this.firework.vel.y >= 0){
+          this.exploded = true;
+          this.explode();
+        }
+        this.particles.forEach(p => p.update());
+        this.particles = this.particles.filter(p => !p.isDone());
+      }
+      explode(){
+        const baseColor = color(random(255), random(255), random(255));
+        const count = 170;
+        for (let i=0;i<count;i++){
+          this.particles.push(new Particle(this.firework.pos.x, this.firework.pos.y, false, baseColor));
+        }
+      }
+      isDone(){ return this.exploded && this.particles.length === 0; }
+      show(){
+        if (!this.exploded) this.firework.show();
+        this.particles.forEach(p => p.show());
+      }
+    }
+
+    class Particle{
+      constructor(x, y, isFirework, clr){
+        this.pos = createVector(x, y);
+        this.isFirework = isFirework;
+        this.lifespan = 255;
+        this.clr = clr || color(255);
+        this.vel = isFirework ? createVector(0, random(-15, -11)) : p5.Vector.random2D().mult(random(2.2, 10.5));
+        this.acc = createVector(0, 0);
+      }
+      applyForce(force){ this.acc.add(force); }
+      update(){
+        if (!this.isFirework){
+          this.vel.mult(0.965);
+          this.lifespan -= 3.4;
+        }
+        this.applyForce(createVector(0, 0.2)); // gravity
+        this.vel.add(this.acc);
+        this.pos.add(this.vel);
+        this.acc.mult(0);
+      }
+      isDone(){ return this.lifespan < 0; }
+      show(){
+        if (!this.isFirework){
+          strokeWeight(2);
+          stroke(red(this.clr), green(this.clr), blue(this.clr), this.lifespan);
+        }else{
+          strokeWeight(4);
+          stroke(255);
+        }
+        point(this.pos.x, this.pos.y);
+      }
+    }
+
+    // ===== Cánh hoa bay nhẹ =====
+    class Petal{
+      constructor(){
+        this.x = random(width);
+        this.y = -20;
+        const S = Math.min(width, height);
+        this.sz = random(clamp(S*0.014, 6, 10), clamp(S*0.022, 10, 14));
+        this.t = random(TWO_PI);
+        this.speed = random(0.6, 1.2);
+        this.c = color(255, random(190,230), random(220,255), 170);
+      }
+      update(){
+        this.t += 0.02;
+        this.x += sin(this.t)*0.55;
+        this.y += this.speed;
+      }
+      show(){
+        noStroke(); fill(this.c);
+        push(); translate(this.x, this.y); rotate(sin(this.t)*0.35);
+        ellipse(0, 0, this.sz*0.56, this.sz);
+        pop();
+      }
+      offscreen(){ return this.y > height + 20; }
+    }
+
+    function maybeSpawnPetal(){
+      // mật độ petal nhẹ hơn trên màn nhỏ
+      const S = Math.min(width, height);
+      const limit = clamp(Math.round(S/10), 40, 60);
+      if (random() < 0.05 && petals.length < limit){
+        petals.push(new Petal());
+      }
+    }
+
+    function windowResized(){
+      resizeCanvas(windowWidth, windowHeight);
+      computeLayout();
+      centerPositions();
+      // Recenter đối tượng hiện có theo layout mới (không reset hiệu ứng)
+      if (flowerPot && flowerPot instanceof FlowerPotNoStems){
+        flowerPot.cx = width/2;
+        flowerPot.cy = height/2;
+        flowerPot.mouthY = flowerPot.cy - POT_H/2;
+        flowerPot.baseY  = flowerPot.cy + POT_H/2;
+      }
+      if (bouquet && bouquet instanceof BouquetNoStems){
+        bouquet.x = width/2;
+        bouquet.y = height/2 - POT_H/2 - BOUQUET_OFFSET_Y;
+      }
+    }
+  </script>
+</body>
+</html>
